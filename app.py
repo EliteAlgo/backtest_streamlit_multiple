@@ -63,7 +63,7 @@ def analyze_data(data):
             legs = trade_setup.get('LD', [])
             sl_hit = False
             for leg in legs:
-                if 'OnSL' in leg.get('Er', ''):
+                if 'OnSL' in str(leg.get('Er') or ''):
                     sl_hit = True
                     break
             if sl_hit:
