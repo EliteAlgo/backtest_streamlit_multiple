@@ -98,6 +98,9 @@ def analyze_data(data):
 
     # Strategy Analysis Table
     strategy_data = []
+    import numpy as np
+    from scipy.stats import skew, kurtosis
+
     for strategy, daily_data in strategy_daily_pnl.items():
         total_strat_pnl = sum(daily_data.values())
         days_traded = len(daily_data)
@@ -107,9 +110,85 @@ def analyze_data(data):
         avg_daily_pnl = total_strat_pnl / days_traded if days_traded > 0 else 0
         
         daily_pnls = list(daily_data.values())
+        daily_pnls_np = np.array(daily_pnls)
+        
         max_loss_day_strat = min(daily_pnls) if daily_pnls else 0
         max_profit_day_strat = max(daily_pnls) if daily_pnls else 0
+
+        # Financial Ratios Calculations
+        std_dev_daily = np.std(daily_pnls_np, ddof=1) if days_traded > 1 else 0
+        std_dev_annualized = std_dev_daily * np.sqrt(252)
         
+        skew_val = skew(daily_pnls_np) if days_traded > 1 else 0
+        kurt_val = kurtosis(daily_pnls_np) if days_traded > 1 else 0
+        
+        # VaR and CVaR (Historical Method)
+        if days_traded > 0:
+            var_5 = np.percentile(daily_pnls_np, 5)
+            var_1 = np.percentile(daily_pnls_np, 1)
+            cvar_5 = daily_pnls_np[daily_pnls_np <= var_5].mean() if len(daily_pnls_np[daily_pnls_np <= var_5]) > 0 else var_5
+        else:
+            var_5 = var_1 = cvar_5 = 0
+
+        # Drawdown Calculations
+        cumulative_pnl = np.cumsum(daily_pnls_np)
+        running_max = np.maximum.accumulate(cumulative_pnl)
+        drawdowns = running_max - cumulative_pnl
+        
+        max_drawdown = np.max(drawdowns) if len(drawdowns) > 0 else 0
+        avg_drawdown = np.mean(drawdowns[drawdowns > 0]) if np.any(drawdowns > 0) else 0
+        
+        # Ulcer Index
+        if days_traded > 0:
+            squared_drawdowns = np.square(drawdowns)
+            ulcer_index = np.sqrt(np.mean(squared_drawdowns))
+        else:
+            ulcer_index = 0
+
+        time_in_drawdown = (np.sum(drawdowns > 0) / days_traded * 100) if days_traded > 0 else 0
+
+        # Ratios (Assuming Risk Free Rate = 0 for Sharpe/Sortino on PnL)
+        sharpe_ratio = (avg_daily_pnl / std_dev_daily * np.sqrt(252)) if std_dev_daily > 0 else 0
+        
+        downside_returns = daily_pnls_np[daily_pnls_np < 0]
+        downside_std = np.std(downside_returns, ddof=1) if len(downside_returns) > 1 else 0
+        sortino_ratio = (avg_daily_pnl / downside_std * np.sqrt(252)) if downside_std > 0 else 0
+        
+        calmar_ratio = (total_strat_pnl / max_drawdown) if max_drawdown > 0 else 0
+        sterling_ratio = (total_strat_pnl / (max_drawdown + 0.1 * max_drawdown)) if max_drawdown > 0 else 0
+        
+        pain_index = np.mean(np.abs(drawdowns)) if days_traded > 0 else 0
+        pain_ratio = (total_strat_pnl / pain_index) if pain_index > 0 else 0
+        
+        sum_wins = np.sum(daily_pnls_np[daily_pnls_np > 0])
+        sum_losses = np.abs(np.sum(daily_pnls_np[daily_pnls_np < 0]))
+        
+        gain_to_pain_ratio = (np.sum(daily_pnls_np) / np.abs(np.sum(daily_pnls_np[daily_pnls_np < 0]))) if np.sum(daily_pnls_np[daily_pnls_np < 0]) != 0 else 0
+
+        profit_factor = (sum_wins / sum_losses) if sum_losses > 0 else 0
+        
+        # Avg Rolling Sharpe (6m) - Assuming ~126 trading days
+        rolling_sharpes = []
+        window = 126
+        if days_traded >= window:
+            for i in range(days_traded - window + 1):
+                window_data = daily_pnls_np[i:i+window]
+                window_mean = np.mean(window_data)
+                window_std = np.std(window_data, ddof=1)
+                if window_std > 0:
+                    rolling_sharpes.append(window_mean / window_std * np.sqrt(252))
+            avg_rolling_sharpe = np.mean(rolling_sharpes) if rolling_sharpes else 0
+        else:
+            avg_rolling_sharpe = 0
+            
+        # CDaR (5%) - Conditional Drawdown at Risk
+        if len(drawdowns) > 0:
+            worst_drawdowns = np.sort(drawdowns)[::-1] # Descending
+            cutoff_index = int(np.ceil(len(worst_drawdowns) * 0.05))
+            cdar_5 = np.mean(worst_drawdowns[:cutoff_index]) if cutoff_index > 0 else 0
+        else:
+            cdar_5 = 0
+
         strategy_data.append({
             "Strategy": strategy,
             "Total PNL": total_strat_pnl,
@@ -117,7 +196,27 @@ def analyze_data(data):
             "Win Rate": f"{win_rate:.1f}%",
             "Avg Daily": avg_daily_pnl,
             "Max Loss (Day)": max_loss_day_strat,
-            "Max Profit (Day)": max_profit_day_strat
+            "Max Profit (Day)": max_profit_day_strat,
+            "Std Dev (Daily)": std_dev_daily,
+            "Std Dev (Ann)": std_dev_annualized,
+            "Skewness": skew_val,
+            "Kurtosis": kurt_val,
+            "VaR (5%)": var_5,
+            "VaR (1%)": var_1,
+            "CVaR (5%)": cvar_5,
+            "Max Drawdown": max_drawdown,
+            "Avg Drawdown": avg_drawdown,
+            "Ulcer Index": ulcer_index,
+            "Time in DD %": f"{time_in_drawdown:.1f}%",
+            "Sharpe Ratio": sharpe_ratio,
+            "Sortino Ratio": sortino_ratio,
+            "Calmar Ratio": calmar_ratio,
+            "Sterling Ratio": sterling_ratio,
+            "Pain Ratio": pain_ratio,
+            "Gain-to-Pain": gain_to_pain_ratio,
+            "Profit Factor": profit_factor,
+            "Avg Roll Sharpe (6m)": avg_rolling_sharpe,
+            "CDaR (5%)": cdar_5
         })
 
     summary_metrics = {
